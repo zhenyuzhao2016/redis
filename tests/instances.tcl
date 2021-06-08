@@ -84,7 +84,9 @@ proc spawn_instance {type base_port count {conf {}}} {
 
         # Check availability
         if {[server_is_up 127.0.0.1 $port 100] == 0} {
-            abort_sentinel_test "Problems starting $type #$j: ping timeout"
+            set logfile [file join $dirname log.txt]
+            puts [exec tail $logfile]
+            abort_sentinel_test "Problems starting $type #$j: ping timeout, maybe server start failed, check $logfile"
         }
 
         # Push the instance into the right list
@@ -334,10 +336,16 @@ proc S {n args} {
     [dict get $s link] {*}$args
 }
 
+# Returns a Redis instance by index.
+# Example:
+#     [Rn 0] info
+proc Rn {n} {
+    return [dict get [lindex $::redis_instances $n] link]
+}
+
 # Like R but to chat with Redis instances.
 proc R {n args} {
-    set r [lindex $::redis_instances $n]
-    [dict get $r link] {*}$args
+    [Rn $n] {*}$args
 }
 
 proc get_info_field {info field} {
@@ -456,12 +464,12 @@ proc kill_instance {type id} {
 
     # Wait for the port it was using to be available again, so that's not
     # an issue to start a new server ASAP with the same port.
-    set retry 10
+    set retry 100
     while {[incr retry -1]} {
-        set port_is_free [catch {set s [socket 127.0.01 $port]}]
+        set port_is_free [catch {set s [socket 127.0.0.1 $port]}]
         if {$port_is_free} break
         catch {close $s}
-        after 1000
+        after 100
     }
     if {$retry == 0} {
         error "Port $port does not return available after killing instance."
@@ -488,7 +496,9 @@ proc restart_instance {type id} {
 
     # Check that the instance is running
     if {[server_is_up 127.0.0.1 $port 100] == 0} {
-        abort_sentinel_test "Problems starting $type #$id: ping timeout"
+        set logfile [file join $dirname log.txt]
+        puts [exec tail $logfile]
+        abort_sentinel_test "Problems starting $type #$id: ping timeout, maybe server start failed, check $logfile"
     }
 
     # Connect with it with a fresh link
@@ -509,3 +519,16 @@ proc restart_instance {type id} {
     }
 }
 
+proc redis_deferring_client {type id} {
+    set port [get_instance_attrib $type $id port]
+    set host [get_instance_attrib $type $id host]
+    set client [redis $host $port 1]
+    return $client
+}
+
+proc redis_client {type id} {
+    set port [get_instance_attrib $type $id port]
+    set host [get_instance_attrib $type $id host]
+    set client [redis $host $port 0]
+    return $client
+}

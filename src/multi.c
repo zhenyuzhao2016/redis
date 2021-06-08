@@ -35,6 +35,7 @@
 void initClientMultiState(client *c) {
     c->mstate.commands = NULL;
     c->mstate.count = 0;
+    c->mstate.cmd_flags = 0;
 }
 
 /* Release all the resources associated with MULTI/EXEC state */
@@ -67,6 +68,7 @@ void queueMultiCommand(client *c) {
     for (j = 0; j < c->argc; j++)
         incrRefCount(mc->argv[j]);
     c->mstate.count++;
+    c->mstate.cmd_flags |= c->cmd->flags;
 }
 
 void discardTransaction(client *c) {
@@ -137,6 +139,21 @@ void execCommand(client *c) {
         goto handle_monitor;
     }
 
+    /* If there are write commands inside the transaction, and this is a read
+     * only slave, we want to send an error. This happens when the transaction
+     * was initiated when the instance was a master or a writable replica and
+     * then the configuration changed (for example instance was turned into
+     * a replica). */
+    if (!server.loading && server.masterhost && server.repl_slave_ro &&
+        !(c->flags & CLIENT_MASTER) && c->mstate.cmd_flags & CMD_WRITE)
+    {
+        addReplyError(c,
+            "Transaction contains write commands but instance "
+            "is now a read-only slave. EXEC aborted.");
+        discardTransaction(c);
+        goto handle_monitor;
+    }
+
     /* Exec all the queued commands */
     unwatchAllKeys(c); /* Unwatch ASAP otherwise we'll waste CPU cycles */
     orig_argv = c->argv;
@@ -158,7 +175,7 @@ void execCommand(client *c) {
             must_propagate = 1;
         }
 
-        call(c,CMD_CALL_FULL);
+        call(c,server.loading ? CMD_CALL_NONE : CMD_CALL_FULL);
 
         /* Commands may alter argc/argv, restore mstate. */
         c->mstate.commands[j].argc = c->argc;
